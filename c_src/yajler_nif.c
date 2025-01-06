@@ -121,7 +121,7 @@ static const char *parse_json(state_t *st, unsigned char *buf, size_t len)
     alloc_funcs.ctx = st->env;
     yajl_handle yh = yajl_alloc(&callbacks, &alloc_funcs, st);
     if (!yh) {
-        return "Failed to allocate YAJL handle";
+        err =  "Failed to allocate YAJL handle";
     }
     
     yajl_config(yh, yajl_dont_validate_strings, 1);
