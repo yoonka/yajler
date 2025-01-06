@@ -4,3 +4,6 @@ rebar
 *.so
 *.beam
 erl_crash.dump
+
+_build
+priv

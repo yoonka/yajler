@@ -48,6 +48,7 @@ static int handle_end_map(void *ctx);
 static int handle_start_array(void *ctx);
 static int handle_end_array(void *ctx);
 
+
 static yajl_callbacks callbacks = {
   handle_null,
   handle_boolean,
@@ -77,6 +78,17 @@ typedef struct {
   char errmsg[ERR_BUF_SIZE];
 } state_t;
 
+static void cleanup_containers(container_t *c) {
+    while (c != NULL && c->next != NULL) { 
+        container_t *next = c->next;
+        if (c->array) {
+            enif_free(c->array);
+        }
+        enif_free(c);
+        c = next;
+    }
+}
+
 
 static void *alloc_func(void *ctx, size_t sz)
 {
@@ -103,30 +115,38 @@ static yajl_alloc_funcs alloc_funcs = {
 
 static const char *parse_json(state_t *st, unsigned char *buf, size_t len)
 {
-  yajl_status ys;
-  const char *err=NULL;
-  
-  alloc_funcs.ctx = st->env; /* will be passed to alloc funcs */
-  yajl_handle yh = yajl_alloc(&callbacks, &alloc_funcs, st);
-  //yajl_config(yh, yajl_allow_comments, 1);
-  yajl_config(yh, yajl_dont_validate_strings, 1);
-  ys = yajl_parse(yh, buf, len);
+    yajl_status ys;
+    const char *err = NULL;
+    
+    alloc_funcs.ctx = st->env;
+    yajl_handle yh = yajl_alloc(&callbacks, &alloc_funcs, st);
+    if (!yh) {
+        return "Failed to allocate YAJL handle";
+    }
+    
+    yajl_config(yh, yajl_dont_validate_strings, 1);
+    ys = yajl_parse(yh, buf, len);
 
-  if (ys == yajl_status_ok) {
-    ys = yajl_complete_parse(yh);
-  }
+    if (ys == yajl_status_ok) {
+        ys = yajl_complete_parse(yh);
+    }
 
-  if (ys != yajl_status_ok) {
-    unsigned char *msg = yajl_get_error(yh, 0, NULL, 0);
-    strncpy(st->errmsg, (char *)msg, ERR_BUF_SIZE-1);
-    yajl_free_error(yh, msg);
-    st->errmsg[sizeof(st->errmsg)] = 0;
-    err = st->errmsg;
-  }
-  yajl_free(yh);
-  return err;
+    if (ys != yajl_status_ok) {
+        unsigned char *msg = yajl_get_error(yh, 0, NULL, 0);
+        if (msg) {
+            strncpy(st->errmsg, (char *)msg, ERR_BUF_SIZE-1);
+            st->errmsg[ERR_BUF_SIZE-1] = '\0';
+            yajl_free_error(yh, msg);
+            err = st->errmsg;
+        } else {
+            err = "Unknown YAJL error";
+        }
+        cleanup_containers(st->c);  
+    }
+    
+    yajl_free(yh);
+    return err;
 }
-
 
 static ERL_NIF_TERM decode_1(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
 {
@@ -224,12 +244,15 @@ static int handle_double(void *ctx, double doubleVal)
 
 static int handle_string(void *ctx, const unsigned char *stringVal, size_t stringLen)
 {
-  state_t *st = (state_t *)ctx;
-  ErlNifBinary bin;
-  enif_alloc_binary(stringLen, &bin);
-  strncpy((char *)bin.data, (char *)stringVal, stringLen);
-  add_element(st, enif_make_binary(st->env, &bin));
-  return 1;
+    state_t *st = (state_t *)ctx;
+    ErlNifBinary bin;
+    if (!enif_alloc_binary(stringLen, &bin)) {
+        return 0;  // Allocation failed
+    }
+    strncpy((char *)bin.data, (char *)stringVal, stringLen);
+    add_element(st, enif_make_binary(st->env, &bin));
+    enif_release_binary(&bin);  // Safe to release after enif_make_binary
+    return 1;
 }
 
 static int handle_map_key(void *ctx, const unsigned char *stringVal, size_t stringLen)
@@ -274,9 +297,14 @@ static int handle_end(void *ctx)
   /* unlink container struct from state */
   st->c = c->next;
   /* create and add container term */
+
   add_element(st, enif_make_list_from_array(st->env, c->array, c->count));
   /* decallocate used container struct */
+  if (c->array) {
+        enif_free(c->array);
+    }
   enif_free(c);
+
   return 1;
 }
 
